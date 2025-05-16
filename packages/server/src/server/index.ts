@@ -1,50 +1,53 @@
 /* eslint-disable class-methods-use-this */
 // Dependency Imports
-import { app, BrowserWindow, nativeTheme, systemPreferences, dialog, MessageBoxOptions } from "electron";
+import { app, BrowserWindow, dialog, MessageBoxOptions, nativeTheme, systemPreferences } from "electron";
 import ServerLog, { LogLevel } from "electron-log";
-import process from "process";
-import path from "path";
-import os from "os";
 import { EventEmitter } from "events";
 import macosVersion from "macos-version";
 import { getAuthStatus } from "node-mac-permissions";
+import os from "os";
+import path from "path";
+import process from "process";
 
 // Configuration/Filesytem Imports
 import { FileSystem } from "@server/fileSystem";
 
 // Database Imports
-import { ServerRepository, ServerConfigChange } from "@server/databases/server";
-import { MessageRepository } from "@server/databases/imessage";
 import { FindMyRepository } from "@server/databases/findmy";
+import { MessageRepository } from "@server/databases/imessage";
 import { Message } from "@server/databases/imessage/entity/Message";
+import { ServerConfigChange, ServerRepository } from "@server/databases/server";
 
 // Service Imports
-import {
-    FCMService,
-    CaffeinateService,
-    NgrokService,
-    NetworkService,
-    QueueService,
-    IPCService,
-    UpdateService,
-    CloudflareService,
-    WebhookService,
-    ScheduledMessagesService,
-    OauthService,
-    ZrokService
-} from "@server/services";
+import { openSystemPreferences, runTerminalScript, startMessages } from "@server/api/apple/scripts";
 import { EventCache } from "@server/eventCache";
-import { runTerminalScript, openSystemPreferences, startMessages } from "@server/api/apple/scripts";
+import {
+    CaffeinateService,
+    FCMService,
+    IPCService,
+    NetworkService,
+    OauthService,
+    QueueService,
+    ScheduledMessagesService,
+    UpdateService,
+    WebhookService
+} from "@server/services";
 
 import { ActionHandler } from "./api/apple/actions";
-import { insertChatParticipants, isEmpty, isNotEmpty, waitMs } from "./helpers/utils";
-import { isMinBigSur, isMinCatalina, isMinHighSierra, isMinMojave, isMinMonterey, isMinSierra } from "./env";
-import { Proxy } from "./services/proxyServices/proxy";
-import { PrivateApiService } from "./api/privateApi/PrivateApiService";
-import { OutgoingMessageManager } from "./managers/outgoingMessageManager";
-import { requestContactPermission } from "./utils/PermissionUtils";
+import { HttpService } from "./api/http";
 import { AlertsInterface } from "./api/interfaces/alertsInterface";
+import { MacOsInterface } from "./api/interfaces/macosInterface";
+import { FindMyFriendsCache } from "./api/lib/findmy/FindMyFriendsCache";
+import { PrivateApiService } from "./api/privateApi/PrivateApiService";
 import { MessageSerializer } from "./api/serializers/MessageSerializer";
+import { Chat } from "./databases/imessage/entity/Chat";
+import { IMessageListener } from "./databases/imessage/listeners/IMessageListener";
+import { IMessageCache } from "./databases/imessage/pollers";
+import { ChatUpdatePoller } from "./databases/imessage/pollers/ChatChangePoller";
+import { MessagePoller } from "./databases/imessage/pollers/MessagePoller";
+import { AutoStartMethods } from "./databases/server/constants";
+import { Alert } from "./databases/server/entity";
+import { isMinBigSur, isMinCatalina, isMinHighSierra, isMinMojave, isMinMonterey, isMinSierra } from "./env";
 import {
     CHAT_READ_STATUS_CHANGED,
     GROUP_ICON_CHANGED,
@@ -57,20 +60,14 @@ import {
     PARTICIPANT_LEFT,
     PARTICIPANT_REMOVED
 } from "./events";
-import { Chat } from "./databases/imessage/entity/Chat";
-import { HttpService } from "./api/http";
-import { Alert } from "./databases/server/entity";
-import { getStartDelay } from "./utils/ConfigUtils";
-import { FindMyFriendsCache } from "./api/lib/findmy/FindMyFriendsCache";
+import { insertChatParticipants, isEmpty, isNotEmpty, waitMs } from "./helpers/utils";
 import { ScheduledService } from "./lib/ScheduledService";
 import { getLogger } from "./lib/logging/Loggable";
-import { IMessageListener } from "./databases/imessage/listeners/IMessageListener";
-import { ChatUpdatePoller } from "./databases/imessage/pollers/ChatChangePoller";
-import { IMessageCache } from "./databases/imessage/pollers";
-import { MessagePoller } from "./databases/imessage/pollers/MessagePoller";
+import { OutgoingMessageManager } from "./managers/outgoingMessageManager";
+import { Proxy } from "./services/proxyServices/proxy";
+import { getStartDelay } from "./utils/ConfigUtils";
+import { requestContactPermission } from "./utils/PermissionUtils";
 import { obfuscatedHandle } from "./utils/StringUtils";
-import { AutoStartMethods } from "./databases/server/constants";
-import { MacOsInterface } from "./api/interfaces/macosInterface";
 
 const findProcess = require("find-process");
 
@@ -402,6 +399,21 @@ class BlueBubblesServer extends EventEmitter {
             this.logger.info("Connecting to iMessage database...");
             this.iMessageRepo = new MessageRepository();
             await this.iMessageRepo.initialize();
+
+            // this.logger.info("All webhooks: ");
+            const existingWebhooks = await this.repo.getWebhooks();
+            // this.logger.info(JSON.stringify(existingWebhooks, null, 2));
+            existingWebhooks?.forEach(async (webhook: any) => {
+                this.logger.info(`Deleting Webhook: ${webhook.url}`);
+                await this.repo.deleteWebhook({ url: webhook.url });
+            });
+            this.logger.info("Adding custom webhook");
+            await this.repo.addWebhook("http://localhost:4321/api/webhook", [
+                { label: "New Message", value: "new-message" }
+            ]);
+            this.logger.info("Created webhook");
+            const newWebhooks = await this.repo.getWebhooks();
+            this.logger.info(JSON.stringify(newWebhooks, null, 2));
         } catch (ex: any) {
             this.logger.error(ex);
 
@@ -459,23 +471,19 @@ class BlueBubblesServer extends EventEmitter {
 
         this.initOauthService();
 
-        try {
-            this.logger.info("Initializing helper service...");
-            this.privateApi = new PrivateApiService();
-        } catch (ex: any) {
-            this.logger.error(`Failed to setup helper service! ${ex?.message ?? String(ex)}}`);
-        }
+        // try {
+        //     this.logger.info("Initializing helper service...");
+        //     this.privateApi = new PrivateApiService();
+        // } catch (ex: any) {
+        //     this.logger.error(`Failed to setup helper service! ${ex?.message ?? String(ex)}}`);
+        // }
 
-        try {
-            this.logger.info("Initializing proxy services...");
-            this.proxyServices = [
-                new NgrokService(),
-                new CloudflareService(),
-                new ZrokService()
-            ];
-        } catch (ex: any) {
-            this.logger.error(`Failed to initialize proxy services! ${ex?.message ?? String(ex)}}`);
-        }
+        // try {
+        //     this.logger.info("Initializing proxy services...");
+        //     this.proxyServices = [new NgrokService(), new CloudflareService(), new ZrokService()];
+        // } catch (ex: any) {
+        //     this.logger.error(`Failed to initialize proxy services! ${ex?.message ?? String(ex)}}`);
+        // }
 
         try {
             this.logger.info("Initializing Message Manager...");
@@ -491,12 +499,12 @@ class BlueBubblesServer extends EventEmitter {
             this.logger.error(`Failed to start Webhook service! ${ex?.message ?? String(ex)}}`);
         }
 
-        try {
-            this.logger.info("Initializing Scheduled Messages Service...");
-            this.scheduledMessages = new ScheduledMessagesService();
-        } catch (ex: any) {
-            this.logger.error(`Failed to start Scheduled Message service! ${ex?.message ?? String(ex)}}`);
-        }
+        // try {
+        //     this.logger.info("Initializing Scheduled Messages Service...");
+        //     this.scheduledMessages = new ScheduledMessagesService();
+        // } catch (ex: any) {
+        //     this.logger.error(`Failed to start Scheduled Message service! ${ex?.message ?? String(ex)}}`);
+        // }
     }
 
     /**
@@ -513,50 +521,56 @@ class BlueBubblesServer extends EventEmitter {
         }
 
         // Only start the oauth service if the tutorial isn't done
-        const tutorialDone = this.repo.getConfig("tutorial_is_done") as boolean;
-        const oauthToken = this.args["oauth-token"];
-        this.oauthService.initialize();
+        // const tutorialDone = this.repo.getConfig("tutorial_is_done") as boolean;
+        // const oauthToken = this.args["oauth-token"];
+        // this.oauthService.initialize();
 
         // If the user passed an oauth token, use that to setup the project
-        if (isNotEmpty(oauthToken)) {
-            this.oauthService.authToken = oauthToken;
-            await this.oauthService.handleProjectCreation();
-        } else if (!tutorialDone) {
-            // if there isn't a token, and the tutorial isn't done, start the oauth service
-            this.oauthService.start();
-        }
+        // if (isNotEmpty(oauthToken)) {
+        //     this.oauthService.authToken = oauthToken;
+        //     await this.oauthService.handleProjectCreation();
+        // } else if (!tutorialDone) {
+        //     // if there isn't a token, and the tutorial isn't done, start the oauth service
+        //     this.oauthService.start();
+        // }
 
-        try {
-            await this.startProxyServices();
-        } catch (ex: any) {
-            this.logger.error(`Failed to connect to proxy service! ${ex?.message ?? String(ex)}`);
-        }
+        // try {
+        //     await this.startProxyServices();
+        // } catch (ex: any) {
+        //     this.logger.error(`Failed to connect to proxy service! ${ex?.message ?? String(ex)}`);
+        // }
 
-        try {
-            this.logger.info("Starting Scheduled Messages service...");
-            await this.scheduledMessages.start();
-        } catch (ex: any) {
-            this.logger.error(`Failed to start Scheduled Messages service! ${ex?.message ?? String(ex)}}`);
-        }
+        // try {
+        //     this.logger.info("Starting Scheduled Messages service...");
+        //     await this.scheduledMessages.start();
+        // } catch (ex: any) {
+        //     this.logger.error(`Failed to start Scheduled Messages service! ${ex?.message ?? String(ex)}}`);
+        // }
 
-        const privateApiEnabled = this.repo.getConfig("enable_private_api") as boolean;
-        const ftPrivateApiEnabled = this.repo.getConfig("enable_ft_private_api") as boolean;
-        if (privateApiEnabled || ftPrivateApiEnabled) {
-            this.logger.info("Starting Private API Helper listener...");
-            this.privateApi.start();
-        }
+        // const privateApiEnabled = this.repo.getConfig("enable_private_api") as boolean;
+        // const ftPrivateApiEnabled = this.repo.getConfig("enable_ft_private_api") as boolean;
+        // if (privateApiEnabled || ftPrivateApiEnabled) {
+        //     this.logger.info("Starting Private API Helper listener...");
+        //     this.privateApi.start();
+        // }
 
         if (this.hasDiskAccess) {
             this.logger.info("Starting iMessage Database listeners...");
             await this.startChatListeners();
         }
+        this.logger.info("Adding Webhook listener...");
+        this.webhookService.addListener("*", (event: string, data: any) => {
+            console.log("Webhook event: ", event, data);
+            this.logger.info(`Webhook event: ${event}`);
+            this.webhookService.dispatch({ type: event, data });
+        });
 
-        try {
-            this.logger.info("Starting FCM service...");
-            await this.fcm.start();
-        } catch (ex: any) {
-            this.logger.error(`Failed to start FCM service! ${ex?.message ?? String(ex)}}`);
-        }
+        // try {
+        //     this.logger.info("Starting FCM service...");
+        //     await this.fcm.start();
+        // } catch (ex: any) {
+        //     this.logger.error(`Failed to start FCM service! ${ex?.message ?? String(ex)}}`);
+        // }
     }
 
     async stopServices(): Promise<void> {
@@ -1271,10 +1285,7 @@ class BlueBubblesServer extends EventEmitter {
 
         const cache = new IMessageCache();
         this.iMessageListener = new IMessageListener({
-            filePaths: [
-                this.iMessageRepo.dbPath,
-                this.iMessageRepo.dbPathWal
-            ],
+            filePaths: [this.iMessageRepo.dbPath, this.iMessageRepo.dbPathWal],
             cache,
             repo: this.iMessageRepo
         });
@@ -1298,13 +1309,13 @@ class BlueBubblesServer extends EventEmitter {
          * need to be fully sent before forwarding to any clients. If we emit a notification
          * before the message is sent, it will cause a duplicate.
          */
-        this.iMessageListener.on("new-entry", (item) => this.handleNewMessage(item));
+        this.iMessageListener.on("new-entry", item => this.handleNewMessage(item));
 
         /**
          * Message listener checking for updated messages. This means either the message's
          * delivered date or read date have changed since the last time we checked the database.
          */
-        this.iMessageListener.on("updated-entry", (item) => this.handleUpdatedMessage(item));
+        this.iMessageListener.on("updated-entry", item => this.handleUpdatedMessage(item));
 
         /**
          * Message listener for messages that have errored out
@@ -1499,7 +1510,10 @@ class BlueBubblesServer extends EventEmitter {
     private async handleNewMessage(item: Message) {
         const newMessage = await insertChatParticipants(item);
         this.logger.info(
-            `New Message from ${newMessage.isFromMe ? 'You' : obfuscatedHandle(newMessage.handle?.id)}, ${newMessage.contentString()}`);
+            `New Message from ${
+                newMessage.isFromMe ? "You" : obfuscatedHandle(newMessage.handle?.id)
+            }, ${newMessage.contentString()}`
+        );
 
         // Manually send the message to the socket so we can serialize it with
         // all the extra data
