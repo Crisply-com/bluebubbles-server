@@ -40,6 +40,7 @@ import { FindMyRouter } from "./routers/findmyRouter";
 import { getLogger } from "@server/lib/logging/Loggable";
 import { WebhookRouter } from "./routers/webhookRouter";
 import { WebhookValidator } from "./validators/webhookValidator";
+import { HubspotOauthRouter } from "./routers/hubspotOauthRouter";
 
 export class HttpRoutes {
     static version = 1;
@@ -660,6 +661,28 @@ export class HttpRoutes {
                         path: "settings",
                         validators: [SettingsValidator.validateDelete],
                         controller: SettingsRouter.delete
+                    }
+                ]
+            },
+            {
+                name: "Hubspot OAuth",
+                middleware: HttpRoutes.unprotected,
+                prefix: "hubspot",
+                routes: [
+                    {
+                        method: HttpMethod.GET,
+                        path: "start-oauth",
+                        controller: HubspotOauthRouter.startOAuth
+                    },
+                    {
+                        method: HttpMethod.GET,
+                        path: "tokens",
+                        controller: HubspotOauthRouter.getTokens
+                    },
+                    {
+                        method: HttpMethod.POST,
+                        path: "disconnect",
+                        controller: HubspotOauthRouter.disconnect
                     }
                 ]
             },

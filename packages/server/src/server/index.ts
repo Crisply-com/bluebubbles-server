@@ -24,6 +24,7 @@ import { EventCache } from "@server/eventCache";
 import {
     CaffeinateService,
     FCMService,
+    HubspotOauthService,
     IPCService,
     NetworkService,
     OauthService,
@@ -64,6 +65,7 @@ import { insertChatParticipants, isEmpty, isNotEmpty, waitMs } from "./helpers/u
 import { ScheduledService } from "./lib/ScheduledService";
 import { getLogger } from "./lib/logging/Loggable";
 import { OutgoingMessageManager } from "./managers/outgoingMessageManager";
+import { HubspotApiService } from "./services/hubspotApiService";
 import { Proxy } from "./services/proxyServices/proxy";
 import { getStartDelay } from "./utils/ConfigUtils";
 import { requestContactPermission } from "./utils/PermissionUtils";
@@ -141,6 +143,10 @@ class BlueBubblesServer extends EventEmitter {
     proxyServices: Proxy[];
 
     webhookService: WebhookService;
+
+    hubspotOauthService: HubspotOauthService;
+
+    hubspotApiService: HubspotApiService;
 
     oauthService: OauthService;
 
@@ -229,6 +235,8 @@ class BlueBubblesServer extends EventEmitter {
         this.updater = null;
         this.messageManager = null;
         this.webhookService = null;
+        this.hubspotOauthService = null;
+        this.hubspotApiService = null;
         this.scheduledMessages = null;
         this.oauthService = null;
         this.iMessageListener = null;
@@ -399,21 +407,6 @@ class BlueBubblesServer extends EventEmitter {
             this.logger.info("Connecting to iMessage database...");
             this.iMessageRepo = new MessageRepository();
             await this.iMessageRepo.initialize();
-
-            // this.logger.info("All webhooks: ");
-            const existingWebhooks = await this.repo.getWebhooks();
-            // this.logger.info(JSON.stringify(existingWebhooks, null, 2));
-            existingWebhooks?.forEach(async (webhook: any) => {
-                this.logger.info(`Deleting Webhook: ${webhook.url}`);
-                await this.repo.deleteWebhook({ url: webhook.url });
-            });
-            this.logger.info("Adding custom webhook");
-            await this.repo.addWebhook("http://localhost:4321/api/webhook", [
-                { label: "New Message", value: "new-message" }
-            ]);
-            this.logger.info("Created webhook");
-            const newWebhooks = await this.repo.getWebhooks();
-            this.logger.info(JSON.stringify(newWebhooks, null, 2));
         } catch (ex: any) {
             this.logger.error(ex);
 
@@ -499,6 +492,21 @@ class BlueBubblesServer extends EventEmitter {
             this.logger.error(`Failed to start Webhook service! ${ex?.message ?? String(ex)}}`);
         }
 
+        try {
+            this.logger.info("Initializing Hubspot OAuth Service...");
+            this.hubspotOauthService = new HubspotOauthService();
+
+            // Only initialize API service if we have valid tokens
+            if (this.hubspotOauthService.hasValidTokens()) {
+                this.logger.info("Initializing Hubspot API Service...");
+                this.hubspotApiService = new HubspotApiService();
+            } else {
+                this.logger.info("No valid HubSpot tokens found. API service will not be initialized.");
+            }
+        } catch (ex: any) {
+            this.logger.error(`Failed to start Hubspot services! ${ex?.message ?? String(ex)}}`);
+        }
+
         // try {
         //     this.logger.info("Initializing Scheduled Messages Service...");
         //     this.scheduledMessages = new ScheduledMessagesService();
@@ -558,12 +566,6 @@ class BlueBubblesServer extends EventEmitter {
             this.logger.info("Starting iMessage Database listeners...");
             await this.startChatListeners();
         }
-        this.logger.info("Adding Webhook listener...");
-        this.webhookService.addListener("*", (event: string, data: any) => {
-            console.log("Webhook event: ", event, data);
-            this.logger.info(`Webhook event: ${event}`);
-            this.webhookService.dispatch({ type: event, data });
-        });
 
         // try {
         //     this.logger.info("Starting FCM service...");
@@ -678,6 +680,9 @@ class BlueBubblesServer extends EventEmitter {
 
         // Let everyone know the setup is complete
         this.emit("setup-complete");
+
+        // Emit to UI that server is ready for HubSpot connection checks
+        this.emitToUI("server-ready", true);
 
         // After setup is complete, start the update checker
         try {
@@ -1514,6 +1519,11 @@ class BlueBubblesServer extends EventEmitter {
                 newMessage.isFromMe ? "You" : obfuscatedHandle(newMessage.handle?.id)
             }, ${newMessage.contentString()}`
         );
+
+        // Let HubSpot service handle all the processing
+        if (this.hubspotApiService) {
+            await this.hubspotApiService.handleNewMessage(newMessage);
+        }
 
         // Manually send the message to the socket so we can serialize it with
         // all the extra data

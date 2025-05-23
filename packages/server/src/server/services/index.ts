@@ -11,6 +11,8 @@ import { CertificateService } from "./certificateService";
 import { WebhookService } from "./webhookService";
 import { ScheduledMessagesService } from "./scheduledMessagesService";
 import { OauthService } from "./oauthService";
+import { HubspotOauthService } from "./hubspotOAuthService"
+import { HubspotApiService } from "./hubspotApiService"
 
 export {
     FCMService,
@@ -25,5 +27,7 @@ export {
     CloudflareService,
     WebhookService,
     ScheduledMessagesService,
-    OauthService
+    OauthService,
+    HubspotOauthService,
+    HubspotApiService
 };

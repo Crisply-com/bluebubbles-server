@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 import { ipcRenderer } from 'electron';
 import React from 'react';
 import { createRoot } from 'react-dom/client';
@@ -15,6 +16,7 @@ import { add as addLog } from './app/slices/LogsSlice';
 import { addAll as addAllWebhooks } from './app/slices/WebhooksSlice';
 import { add as addAlert, addAll as addAllAlerts, NotificationItem, clear as clearAlerts } from './app/slices/NotificationsSlice';
 import { getRandomInt } from './app/utils/GenericUtils';
+import CrisplyApp from 'app/CrisplyApp';
 
 
 const theme = extendTheme(baseTheme);
@@ -90,10 +92,10 @@ const loadAlerts = (replace = false) => {
 loadAlerts();
 
 // Load private API requirements
-getPrivateApiRequirements().then(requirements => {
-    if (!requirements) return;
-    store.dispatch(setConfig({ name: 'private_api_requirements', value: requirements }));
-});
+// getPrivateApiRequirements().then(requirements => {
+//     if (!requirements) return;
+//     store.dispatch(setConfig({ name: 'private_api_requirements', value: requirements }));
+// });
 
 // Check permissions
 checkPermissions().then(permissions => {
@@ -102,10 +104,10 @@ checkPermissions().then(permissions => {
 });
 
 // Load the alerts from the server
-getWebhooks().then(hooks => {
-    if (!hooks) return;
-    store.dispatch(addAllWebhooks(hooks));
-});
+// getWebhooks().then(hooks => {
+//     if (!hooks) return;
+//     store.dispatch(addAllWebhooks(hooks));
+// });
 
 ipcRenderer.on('new-log', (_: any, data: any) => {
     store.dispatch(addLog({
@@ -164,7 +166,7 @@ root.render(
         <Provider store={store}>
             <ColorModeScript initialColorMode={theme.config.initialColorMode} />
             <ChakraProvider theme={theme} colorModeManager={localStorageManager}>
-                <App />
+                <CrisplyApp />
             </ChakraProvider>
         </Provider>
     </React.StrictMode>

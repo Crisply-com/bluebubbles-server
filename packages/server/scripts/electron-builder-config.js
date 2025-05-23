@@ -1,7 +1,7 @@
 // NOTE: All paths are relative to the package.json that will be loading this configuration file.
 // Making them relative to the scripts folder will break the commands
 module.exports = {
-    "productName": "BlueBubbles",
+    "productName": "Crisply",
     "appId": "com.BlueBubbles.BlueBubbles-Server",
     "npmRebuild": true,
     "directories": {

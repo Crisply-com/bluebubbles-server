@@ -49,6 +49,47 @@ export class IPCService extends Loggable {
             };
         });
 
+        ipcMain.handle("start-hubspot-oauth", async () => {
+            await Server().hubspotOauthService.start(); // launches browser window
+        });
+
+        ipcMain.handle("disconnect-hubspot", async () => {
+            Server().hubspotOauthService.disconnect();
+            Server().emitToUI("hubspot-disconnected", true);
+        });
+
+        ipcMain.handle("check-hubspot-connection", async () => {
+            try {
+                // First try to refresh token if needed
+                await Server().hubspotOauthService.refreshTokenIfNeeded();
+
+                const hasTokens = Server().hubspotOauthService.hasValidTokens();
+                const tokens = Server().hubspotOauthService.getTokens();
+                log.info(
+                    `HubSpot connection check: hasTokens=${hasTokens}, tokens=${JSON.stringify(
+                        tokens
+                            ? {
+                                  access_token: tokens.access_token ? "present" : "missing",
+                                  expires_in: tokens.expires_in
+                              }
+                            : null
+                    )}`
+                );
+
+                // If we have valid tokens but no API service, initialize it
+                if (hasTokens && !Server().hubspotApiService) {
+                    const { HubspotApiService } = await import("../hubspotApiService");
+                    Server().hubspotApiService = new HubspotApiService();
+                    log.info("HubSpot API Service initialized during connection check");
+                }
+
+                return hasTokens;
+            } catch (error: any) {
+                log.error(`Error checking HubSpot connection: ${error.message}`);
+                return false;
+            }
+        });
+
         ipcMain.handle("set-config", async (_, args) => {
             // Make sure that the server address being sent is using https (if enabled)
             if (args.server_address) {
